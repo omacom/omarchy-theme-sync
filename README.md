@@ -11,10 +11,11 @@ the colors.
 
 ## Install
 
-You need an Omarchy desktop and Chromium. There is no build step and no npm
-install. The installer runs as your normal user, without `sudo`.
+You need an Omarchy desktop and a supported Chromium-based browser such as Chromium,
+Brave, or Microsoft Edge. There is no build step and no npm install. The installer
+runs as your normal user, without `sudo`.
 
-1. Open Chromium at least once so its profile exists.
+1. Open your browser at least once so its profile exists.
 2. Clone the project and run the installer:
 
 ```bash
@@ -23,8 +24,13 @@ cd omarchy-theme-sync
 ./install.sh
 ```
 
-3. Fully quit and restart Chromium.
-4. Open `chrome://extensions` and check for **Omarchy Theme Sync**.
+3. Fully quit and restart the browser.
+4. Open your browser’s extensions page and check for **Omarchy Theme Sync**:
+   - Chromium: `chrome://extensions`
+   - Brave: `brave://extensions`
+   - Edge: `edge://extensions`
+
+   In Edge, enable **Developer mode** if it is not already enabled.
 
 Keep the project folder in place. The browser loads the extension and its local
 helper directly from this folder.
@@ -33,10 +39,14 @@ The runtime needs Bash, jq, inotify-tools, util-linux, and GNU coreutils with
 `mv --no-copy` support. These tools are normally available on Omarchy. Python 3
 is only needed for the demo. Node.js 22 or newer is only needed for tests.
 
-Automatic setup uses Omarchy's Chromium launcher and `chromium-flags.conf`.
-The installer also registers the helper for other installed Chromium-based
-browsers, but you may need to load `extension/` manually in those browsers.
+Automatic setup writes `--load-extension` to the flags file for each installed
+Chromium-based browser it detects. It supports Chromium, Brave, Microsoft Edge,
+Vivaldi, Opera, and Helium. Brave and Microsoft Edge have been tested; the other
+listed browsers should work through the same mechanism but have not been tested.
 Firefox is not supported yet.
+
+Google Chrome 137 and newer ignore `--load-extension`, so Chrome users must load
+`extension/` manually from `chrome://extensions` with Developer mode enabled.
 
 ## Use Colors in CSS
 
@@ -195,8 +205,8 @@ restarts the connection to the local helper. Reload any open test pages afterwar
 
 ## Troubleshooting
 
-- **The installer reports zero browser profiles:** Open Chromium once, then run `./install.sh` again.
-- **The extension is missing:** Fully quit and restart Chromium, then check `chrome://extensions`.
+- **The installer says no browser profile was found:** Open your browser once, then run `./install.sh` again.
+- **The extension is missing:** Fully quit and restart the browser, then check its extensions page. Google Chrome is the one exception — see the browser table under [Install](#install).
 - **The palette is empty:** Confirm Omarchy has an active theme, then reload the extension.
 - **Local demo buttons are disabled:** This is the default. Follow the exact-origin opt-in in [Try the Demo](#try-the-demo).
 - **You want to move the project folder:** Uninstall from the old location first. Move it, then run the installer from the new location.

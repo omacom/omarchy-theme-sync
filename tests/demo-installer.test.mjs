@@ -156,11 +156,16 @@ test('all demo server instructions bind loopback and serve only demo from the pr
   assert.match(demo, /explicitly allow this exact origin/);
 });
 
-function temporaryEnvironment(t) {
+function temporaryEnvironment(t, launchers = []) {
   const root = mkdtempSync(join(tmpdir(), 'omarchy-demo-installer-'));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
-  return { root, env: {
-    PATH: process.env.PATH,
+  // The installer treats a browser as installed only when its launcher is on
+  // PATH, so the stubs below are what makes a browser "present" here.
+  const bin = join(root, 'bin');
+  mkdirSync(bin, { recursive: true });
+  for (const name of launchers) writeFileSync(join(bin, name), '#!/bin/sh\n', { mode: 0o755 });
+  return { root, bin, env: {
+    PATH: [bin, process.env.PATH].join(delimiter),
     HOME: root,
     TMPDIR: root,
     XDG_CONFIG_HOME: join(root, 'config'),
@@ -174,6 +179,19 @@ function temporaryEnvironment(t) {
 
 const proxy = '--proxy-server=socks5://127.0.0.1:9050';
 const existing = ['/existing/one', '/existing/two'];
+const extensionId = 'ppnnomfimbfcofidkfmghapellfbgklc';
+
+// Every case runs against three installed browsers: Chromium, whose flags file
+// does not exist yet, Brave Origin, whose flags file Omarchy has already written,
+// and Edge, whose flags file is named after the packaging (microsoft-edge-stable)
+// rather than the profile directory, so the pairing has to be pinned. Every other
+// browser listed in install.sh has neither a profile root nor a launcher here, so
+// it must stay out of both the manifests and the flags files.
+const installedBrowsers = [
+  ['chromium', 'chromium-flags.conf'],
+  [join('BraveSoftware', 'Brave-Origin'), 'brave-origin-flags.conf'],
+  ['microsoft-edge', 'microsoft-edge-stable-flags.conf'],
+];
 for (const [name, initial, kept, paths] of [
   ['missing flags', () => null, '', []],
   ['unterminated final proxy flag', () => '# keep this comment\n' + proxy, '# keep this comment\n' + proxy + '\n', []],
@@ -183,7 +201,7 @@ for (const [name, initial, kept, paths] of [
   ['only the own extension', (extension) => '--load-extension=' + extension, '', []],
 ]) {
   test(`installer preserves ${name} through repeated install/uninstall`, (t) => {
-    const { root, env } = temporaryEnvironment(t);
+    const { root, env } = temporaryEnvironment(t, ['chromium', 'brave-origin', 'microsoft-edge-stable']);
     const extension = join(root, 'extension');
     mkdirSync(extension);
     writeFileSync(join(extension, 'manifest.json'), '{}');
@@ -192,9 +210,16 @@ for (const [name, initial, kept, paths] of [
     mkdirSync(env.XDG_CONFIG_HOME);
     const unrelated = join(env.XDG_CONFIG_HOME, 'unrelated.conf');
     writeFileSync(unrelated, 'unchanged');
-    const flags = join(env.XDG_CONFIG_HOME, 'chromium-flags.conf');
+    for (const [dir] of installedBrowsers) mkdirSync(join(env.XDG_CONFIG_HOME, dir), { recursive: true });
+    const flags = installedBrowsers.map(([, file]) => join(env.XDG_CONFIG_HOME, file));
     const before = initial(extension);
-    if (before !== null) writeFileSync(flags, before);
+    const seed = (contents) => {
+      for (const file of flags) {
+        if (contents === null) rmSync(file, { force: true });
+        else writeFileSync(file, contents);
+      }
+    };
+    seed(before);
     const run = (uninstall = false) => execFileSync('/bin/bash', [join(project, 'install.sh'), ...(uninstall ? ['--uninstall'] : [])], {
       cwd: root,
       env: { ...env, OMARCHY_THEME_HOST_BIN: host, OMARCHY_THEME_EXTENSION_DIR: extension },
@@ -202,25 +227,82 @@ for (const [name, initial, kept, paths] of [
       timeout: 10000,
     });
     const uninstalled = kept + (paths.length ? '--load-extension=' + paths.join(',') + '\n' : '');
+    const readAll = () => flags.map((file) => (existsSync(file) ? readFileSync(file, 'utf8') : null));
+    const every = (value) => installedBrowsers.map(() => value);
     run(true);
     if (before === null) {
-      assert.equal(existsSync(flags), false);
+      assert.deepEqual(readAll(), every(null));
     } else {
-      assert.equal(readFileSync(flags, 'utf8'), uninstalled);
-      writeFileSync(flags, before);
+      assert.deepEqual(readAll(), every(uninstalled));
     }
+    seed(before);
     for (let i = 0; i < 2; i++) {
       run();
-      assert.equal(readFileSync(flags, 'utf8'), kept + '--load-extension=' + [...paths, extension].join(',') + '\n');
+      const expected = kept + '--load-extension=' + [...paths, extension].join(',') + '\n';
+      assert.deepEqual(readAll(), every(expected));
+    }
+    for (const [dir] of installedBrowsers) {
+      const manifest = join(env.XDG_CONFIG_HOME, dir, 'NativeMessagingHosts', 'com.omarchy.theme.json');
+      assert.deepEqual(JSON.parse(readFileSync(manifest, 'utf8')).allowed_origins, [`chrome-extension://${extensionId}/`]);
     }
     for (let i = 0; i < 2; i++) {
       run(true);
-      assert.equal(readFileSync(flags, 'utf8'), uninstalled);
+      assert.deepEqual(readAll(), every(uninstalled));
+      assert.deepEqual(every(false), installedBrowsers.map(([dir]) => existsSync(join(env.XDG_CONFIG_HOME, dir, 'NativeMessagingHosts', 'com.omarchy.theme.json'))));
     }
     assert.equal(readFileSync(unrelated, 'utf8'), 'unchanged');
-    assert.deepEqual(readdirSync(env.XDG_CONFIG_HOME).sort(), ['chromium-flags.conf', 'unrelated.conf']);
+    assert.deepEqual(readdirSync(env.XDG_CONFIG_HOME).sort(), [
+      'BraveSoftware',
+      'brave-origin-flags.conf',
+      'chromium',
+      'chromium-flags.conf',
+      'microsoft-edge',
+      'microsoft-edge-stable-flags.conf',
+      'unrelated.conf',
+    ]);
   });
 }
+
+test('installer configures a browser only once it is installed and has been run', (t) => {
+  const { root, env, bin } = temporaryEnvironment(t, ['chromium']);
+  const extension = join(root, 'extension');
+  mkdirSync(extension);
+  writeFileSync(join(extension, 'manifest.json'), '{}');
+  const host = join(root, 'host-must-not-run');
+  writeFileSync(host, '#!/bin/sh\nexit 99\n', { mode: 0o700 });
+  mkdirSync(join(env.XDG_CONFIG_HOME, 'chromium'), { recursive: true });
+  const braveRoot = join(env.XDG_CONFIG_HOME, 'BraveSoftware', 'Brave-Browser');
+  // Omarchy's own copy-url and yt-dlp installers mkdir -p every browser profile
+  // root, so a profile directory on its own must not count as an installed Brave.
+  mkdirSync(braveRoot, { recursive: true });
+  const braveFlags = join(env.XDG_CONFIG_HOME, 'brave-flags.conf');
+  const untouched = '--password-store=gnome-libsecret\n';
+  writeFileSync(braveFlags, untouched);
+  const run = (uninstall = false) => execFileSync('/bin/bash', [join(project, 'install.sh'), ...(uninstall ? ['--uninstall'] : [])], {
+    cwd: root,
+    env: { ...env, OMARCHY_THEME_HOST_BIN: host, OMARCHY_THEME_EXTENSION_DIR: extension },
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+
+  run();
+  assert.ok(readFileSync(join(env.XDG_CONFIG_HOME, 'chromium-flags.conf'), 'utf8').includes('--load-extension=' + extension));
+  assert.equal(readFileSync(braveFlags, 'utf8'), untouched);
+  assert.equal(existsSync(join(braveRoot, 'NativeMessagingHosts', 'com.omarchy.theme.json')), false);
+
+  // Brave gets installed for real: the launcher appears, and the next run picks
+  // the browser up without anyone touching the installer.
+  writeFileSync(join(bin, 'brave'), '#!/bin/sh\n', { mode: 0o755 });
+  run();
+  assert.ok(readFileSync(braveFlags, 'utf8').includes('--load-extension=' + extension));
+  assert.equal(existsSync(join(braveRoot, 'NativeMessagingHosts', 'com.omarchy.theme.json')), true);
+
+  // The profile is gone but the flags file is not: uninstall still has to drop the
+  // path, or Brave would fail on a directory that no longer exists.
+  rmSync(join(env.XDG_CONFIG_HOME, 'BraveSoftware'), { recursive: true, force: true });
+  run(true);
+  assert.equal(readFileSync(braveFlags, 'utf8'), untouched);
+});
 
 const chromium = ['chromium', 'chromium-browser', 'google-chrome'].flatMap((name) =>
   (process.env.PATH || '').split(delimiter).map((directory) => join(directory, name))).find((file) => {
